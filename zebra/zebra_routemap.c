@@ -57,7 +57,6 @@ struct nh_rmap_obj {
 
 static void zebra_route_map_set_delay_timer(uint32_t value);
 
-
 /* Add zebra route map rule */
 static int zebra_route_match_add(struct vty *vty, const char *command,
 				 const char *arg, route_map_event_t type)
@@ -1065,6 +1064,38 @@ static struct route_map_rule_cmd route_match_ip_address_prefix_list_cmd = {
 	route_match_ip_address_prefix_list_compile,
 	route_match_ip_address_prefix_list_free};
 
+static route_map_result_t
+route_match_ipv6_address_prefix_list(void *rule, struct prefix *prefix,
+				     route_map_object_t type, void *object)
+{
+	struct prefix_list *plist;
+
+	if (type == RMAP_ZEBRA && prefix->family == AF_INET6) {
+		plist = prefix_list_lookup(AFI_IP6, (char *)rule);
+		if (plist == NULL)
+			return RMAP_NOMATCH;
+
+		return (prefix_list_apply(plist, prefix) == PREFIX_DENY
+				? RMAP_NOMATCH
+				: RMAP_MATCH);
+	}
+	return RMAP_NOMATCH;
+}
+
+static void *route_match_ipv6_address_prefix_list_compile(const char *arg)
+{
+	return XSTRDUP(MTYPE_ROUTE_MAP_COMPILED, arg);
+}
+
+static void route_match_ipv6_address_prefix_list_free(void *rule)
+{
+	XFREE(MTYPE_ROUTE_MAP_COMPILED, rule);
+}
+
+static struct route_map_rule_cmd route_match_ipv6_address_prefix_list_cmd = {
+	"ipv6 address prefix-list", route_match_ipv6_address_prefix_list,
+	route_match_ipv6_address_prefix_list_compile,
+	route_match_ipv6_address_prefix_list_free};
 
 /* `match ip address prefix-len PREFIXLEN' */
 
@@ -1287,8 +1318,10 @@ static struct route_map_rule_cmd route_set_src_cmd = {
 static void zebra_route_map_process_update_cb(char *rmap_name)
 {
 	if (IS_ZEBRA_DEBUG_EVENT)
-		zlog_debug("Event handler for route-map: %s",
-			   rmap_name);
+		zlog_debug("Event handler for route-map: %s", rmap_name);
+	zebra_import_table_rm_update(rmap_name);
+	zebra_rib_table_rm_update(rmap_name);
+	zebra_nht_rm_update(rmap_name);
 }
 
 static int zebra_route_map_update_timer(struct thread *thread)
@@ -1299,8 +1332,7 @@ static int zebra_route_map_update_timer(struct thread *thread)
 		zlog_debug("Event driven route-map update triggered");
 
 	if (IS_ZEBRA_DEBUG_RIB_DETAILED)
-		zlog_debug(
-			"%u: Routemap update-timer fired, scheduling RIB processing",
+		zlog_debug("%u: Routemap update-timer fired, scheduling RIB processing",
 			VRF_DEFAULT);
 
 	route_map_walk_update_list(zebra_route_map_process_update_cb);
@@ -1310,11 +1342,6 @@ static int zebra_route_map_update_timer(struct thread *thread)
 	 * 1) VRF Aware <sigh>
 	 * 2) Route-map aware
 	 */
-	zebra_import_table_rm_update();
-	rib_update(VRF_DEFAULT, RIB_UPDATE_RMAP_CHANGE);
-	zebra_evaluate_rnh(0, AF_INET, 1, RNH_NEXTHOP_TYPE, NULL);
-	zebra_evaluate_rnh(0, AF_INET6, 1, RNH_NEXTHOP_TYPE, NULL);
-
 	return (0);
 }
 
@@ -1439,6 +1466,9 @@ route_map_result_t zebra_nht_route_map_check(int family, int client_proto,
 
 static void zebra_route_map_mark_update(const char *rmap_name)
 {
+	if (IS_ZEBRA_DEBUG_EVENT)
+		zlog_debug("%s : routemap %s changed", __func__, rmap_name);
+
 	/* rmap_update_timer of 0 means don't do route updates */
 	if (zebra_rmap_update_timer && !zebra_t_rmap_update) {
 		zebra_t_rmap_update = NULL;
@@ -1471,6 +1501,78 @@ static void zebra_route_map_event(route_map_event_t event,
 		zebra_route_map_mark_update(rmap_name);
 
 	route_map_notify_dependencies(rmap_name, RMAP_EVENT_MATCH_ADDED);
+}
+
+/* Check for the changed routemap to be matching the configured routemaps
+ *  in the protocol rmap table.
+ */
+void zebra_rib_table_rm_update(char *rmap)
+{
+	int i = 0;
+	struct route_table *table;
+	char *rmap_name;
+
+	for (i = 0; i <= ZEBRA_ROUTE_MAX; i++) {
+		rmap_name = proto_rm[AFI_IP][i];
+		if (rmap_name && (strcmp(rmap_name, rmap) == 0)) {
+			if (IS_ZEBRA_DEBUG_EVENT)
+				zlog_debug("%s : AFI_IP rmap %s, route type %d",
+					   __func__, rmap, i);
+			table = zebra_vrf_table(AFI_IP, SAFI_UNICAST,
+						VRF_DEFAULT);
+			if (table)
+				rib_update_table(table, RIB_UPDATE_RMAP_CHANGE);
+			break;
+		}
+	}
+
+	for (i = 0; i <= ZEBRA_ROUTE_MAX; i++) {
+		rmap_name = proto_rm[AFI_IP6][i];
+		if (rmap_name && (strcmp(rmap_name, rmap) == 0)) {
+			if (IS_ZEBRA_DEBUG_EVENT)
+				zlog_debug(
+					"%s : AFI_IP6 rmap %s, route type %d",
+					__func__, rmap, i);
+			table = zebra_vrf_table(AFI_IP6, SAFI_UNICAST,
+						VRF_DEFAULT);
+			if (table)
+				rib_update_table(table, RIB_UPDATE_RMAP_CHANGE);
+			break;
+		}
+	}
+}
+
+/* Check if the changed routemap is matching the configured routemaps in
+ * the nexthop routemap table
+ */
+void zebra_nht_rm_update(char *rmap)
+{
+	int i = 0;
+	char *rmap_name;
+
+	for (i = 0; i <= ZEBRA_ROUTE_MAX; i++) {
+		rmap_name = nht_rm[AFI_IP][i];
+		if (rmap_name && (strcmp(rmap_name, rmap) == 0)) {
+			if (IS_ZEBRA_DEBUG_EVENT)
+				zlog_debug("%s : AFI_IP rmap %s route type %d",
+					   __func__, rmap, i);
+			zebra_evaluate_rnh(0, AF_INET, 1, RNH_NEXTHOP_TYPE,
+					   NULL);
+			break;
+		}
+	}
+
+	for (i = 0; i <= ZEBRA_ROUTE_MAX; i++) {
+		rmap_name = nht_rm[AFI_IP6][i];
+		if (rmap_name && (strcmp(rmap_name, rmap) == 0)) {
+			if (IS_ZEBRA_DEBUG_EVENT)
+				zlog_debug("%s : AFI_IP6 rmap %s route type %d",
+					   __func__, rmap, i);
+			zebra_evaluate_rnh(0, AF_INET6, 1, RNH_NEXTHOP_TYPE,
+					   NULL);
+			break;
+		}
+	}
 }
 
 /* ip protocol configuration write function */
@@ -1558,12 +1660,19 @@ void zebra_route_map_init()
 	route_map_match_tag_hook(generic_match_add);
 	route_map_no_match_tag_hook(generic_match_delete);
 
+	route_map_match_ipv6_address_hook(generic_match_add);
+	route_map_no_match_ipv6_address_hook(generic_match_delete);
+
+	route_map_match_ipv6_address_prefix_list_hook(generic_match_add);
+	route_map_no_match_ipv6_address_prefix_list_hook(generic_match_delete);
+
 	route_map_install_match(&route_match_tag_cmd);
 	route_map_install_match(&route_match_interface_cmd);
 	route_map_install_match(&route_match_ip_next_hop_cmd);
 	route_map_install_match(&route_match_ip_next_hop_prefix_list_cmd);
 	route_map_install_match(&route_match_ip_address_cmd);
 	route_map_install_match(&route_match_ip_address_prefix_list_cmd);
+	route_map_install_match(&route_match_ipv6_address_prefix_list_cmd);
 	route_map_install_match(&route_match_ip_address_prefix_len_cmd);
 	route_map_install_match(&route_match_ipv6_address_prefix_len_cmd);
 	route_map_install_match(&route_match_ip_nexthop_prefix_len_cmd);
