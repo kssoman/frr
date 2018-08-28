@@ -234,7 +234,7 @@ static int bgp_config_check(struct bgp *bgp, int config)
 }
 
 /* Set BGP router identifier. */
-static int bgp_router_id_set(struct bgp *bgp, const struct in_addr *id)
+int bgp_router_id_set(struct bgp *bgp, const struct in_addr *id)
 {
 	struct peer *peer;
 	struct listnode *node, *nnode;
@@ -270,6 +270,10 @@ void bgp_router_id_zebra_bump(vrf_id_t vrf_id, const struct prefix *router_id)
 {
 	struct listnode *node, *nnode;
 	struct bgp *bgp;
+	struct in_addr *addr = NULL;
+
+	if (router_id != NULL)
+		addr = (struct in_addr *)&router_id->u.prefix4;
 
 	if (vrf_id == VRF_DEFAULT) {
 		/* Router-id change for default VRF has to also update all
@@ -278,17 +282,27 @@ void bgp_router_id_zebra_bump(vrf_id_t vrf_id, const struct prefix *router_id)
 			if (bgp->inst_type == BGP_INSTANCE_TYPE_VRF)
 				continue;
 
-			bgp->router_id_zebra = router_id->u.prefix4;
+			/* If router_id is NULL, then it is interface delete
+			 * Set bgp router ID to the value router_id_zebra
+			 */
+			if (addr)
+				bgp->router_id_zebra = *addr;
+			else
+				addr = &bgp->router_id_zebra;
+
 			if (!bgp->router_id_static.s_addr)
-				bgp_router_id_set(bgp, &router_id->u.prefix4);
+				bgp_validate_set_router_id(bgp, addr);
 		}
 	} else {
 		bgp = bgp_lookup_by_vrf_id(vrf_id);
 		if (bgp) {
-			bgp->router_id_zebra = router_id->u.prefix4;
+			if (addr)
+				bgp->router_id_zebra = *addr;
+			else
+				addr = &bgp->router_id_zebra;
 
 			if (!bgp->router_id_static.s_addr)
-				bgp_router_id_set(bgp, &router_id->u.prefix4);
+				bgp_validate_set_router_id(bgp, addr);
 		}
 	}
 }

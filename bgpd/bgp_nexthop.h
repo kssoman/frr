@@ -102,5 +102,6 @@ extern void bgp_tip_add(struct bgp *bgp, struct in_addr *tip);
 extern void bgp_tip_del(struct bgp *bgp, struct in_addr *tip);
 extern void bgp_tip_hash_init(struct bgp *bgp);
 extern void bgp_tip_hash_destroy(struct bgp *bgp);
-
+extern void bgp_validate_set_router_id(struct bgp *bgp,
+			struct in_addr *new_addr);
 #endif /* _QUAGGA_BGP_NEXTHOP_H */

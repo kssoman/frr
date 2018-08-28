@@ -251,6 +251,26 @@ static void bgp_address_del(struct bgp *bgp, struct prefix *p)
 	}
 }
 
+/* Verify if the bgp router ID is in the address hash table */
+void bgp_validate_set_router_id(struct bgp *bgp, struct in_addr *new_addr)
+{
+	struct bgp_addr tmp;
+	struct bgp_addr *addr;
+
+	if (!new_addr) {
+		zlog_err("%s : invalid router ID", __func__);
+		return;
+	}
+
+	tmp.addr = bgp->router_id;
+	addr = hash_lookup(bgp->address_hash, &tmp);
+	if (addr == NULL) {
+		if (BGP_DEBUG(zebra, ZEBRA))
+			zlog_debug("RID change : vrf %d, RTR ID %s",
+				bgp->vrf_id, inet_ntoa(*new_addr));
+		bgp_router_id_set(bgp, new_addr);
+	}
+}
 
 struct bgp_connected_ref {
 	unsigned int refcnt;
