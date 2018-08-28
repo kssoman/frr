@@ -449,14 +449,18 @@ void zebra_interface_address_add_update(struct interface *ifp,
 
 	zebra_vxlan_add_del_gw_macip(ifp, ifc->address, 1);
 
-	router_id_add_address(ifc);
-
 	for (ALL_LIST_ELEMENTS(zebrad.client_list, node, nnode, client))
 		if (CHECK_FLAG(ifc->conf, ZEBRA_IFC_REAL)) {
 			client->connected_rt_add_cnt++;
 			zsend_interface_address(ZEBRA_INTERFACE_ADDRESS_ADD,
 						client, ifp, ifc);
 		}
+
+	/* Send ROUTER_ID update message to client after sending interface
+	 * address ADD message. This will allow the client to update the
+	 * hash table of connected address used for selecting router ID
+	 */
+	router_id_add_address(ifc);
 }
 
 /* Interface address deletion. */
@@ -478,14 +482,17 @@ void zebra_interface_address_delete_update(struct interface *ifp,
 
 	zebra_vxlan_add_del_gw_macip(ifp, ifc->address, 0);
 
-	router_id_del_address(ifc);
-
 	for (ALL_LIST_ELEMENTS(zebrad.client_list, node, nnode, client))
 		if (CHECK_FLAG(ifc->conf, ZEBRA_IFC_REAL)) {
 			client->connected_rt_del_cnt++;
 			zsend_interface_address(ZEBRA_INTERFACE_ADDRESS_DELETE,
 						client, ifp, ifc);
 		}
+	/* Send ROUTER_ID update message to client after sending interface
+	 * address DELETE message. This will allow the client to update the
+	 * hash table of connected address used for selecting router ID
+	 */
+	router_id_del_address(ifc);
 }
 
 /* Interface VRF change. May need to delete from clients not interested in

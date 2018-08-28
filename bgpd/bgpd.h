@@ -1868,5 +1868,5 @@ extern void bgp_update_redist_vrf_bitmaps(struct bgp *, vrf_id_t);
 
 /* For benefit of rfapi */
 extern struct peer *peer_new(struct bgp *bgp);
-
+extern int bgp_router_id_set(struct bgp *bgp, const struct in_addr *id);
 #endif /* _QUAGGA_BGPD_H */

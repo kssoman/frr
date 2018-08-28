@@ -379,6 +379,8 @@ static int bgp_interface_address_delete(int command, struct zclient *zclient,
 {
 	struct connected *ifc;
 	struct bgp *bgp;
+	struct prefix *p;
+	bool update_routerid = false;
 
 	bgp = bgp_lookup_by_vrf_id(vrf_id);
 	if (!bgp)
@@ -396,11 +398,22 @@ static int bgp_interface_address_delete(int command, struct zclient *zclient,
 			   ifc->ifp->name, buf);
 	}
 
+	/* Update the router id if the interface address being deleted is
+	 * same as the bgp router id
+	 */
+	p = ifc->address;
+	if ((p->family == AF_INET) &&
+		IPV4_ADDR_SAME(&bgp->router_id, &p->u.prefix4))
+		update_routerid = true;
+
 	if (if_is_operative(ifc->ifp)) {
 		bgp_connected_delete(bgp, ifc);
 	}
 
 	connected_free(ifc);
+
+	if (update_routerid)
+		bgp_router_id_zebra_bump(vrf_id, NULL);
 
 	return 0;
 }
