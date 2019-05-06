@@ -505,7 +505,9 @@ struct bgp {
 	uint32_t restart_time;
 	uint32_t stalepath_time;
 	uint32_t select_defer_time;
+	uint32_t rib_stale_time;
 	struct graceful_restart_info gr_info[AFI_MAX][SAFI_MAX];
+	bool gr_capability_sent;
 #define BGP_ROUTE_SELECT_DELAY 1
 #define BGP_MAX_BEST_ROUTE_SELECT 10000
 	/* Maximum-paths configuration */
@@ -1530,6 +1532,7 @@ struct bgp_nlri {
 #define BGP_DEFAULT_RESTART_TIME               120
 #define BGP_DEFAULT_STALEPATH_TIME             360
 #define BGP_DEFAULT_SELECT_DEFERRAL_TIME       360
+#define BGP_DEFAULT_RIB_STALE_TIME             500
 
 /* BGP uptime string length.  */
 #define BGP_UPTIME_LEN 25
@@ -2045,4 +2048,5 @@ extern void bgp_unset_redist_vrf_bitmaps(struct bgp *, vrf_id_t);
 
 /* For benefit of rfapi */
 extern struct peer *peer_new(struct bgp *bgp);
+extern bool bgp_check_send_gr_capability(struct bgp *bgp);
 #endif /* _QUAGGA_BGPD_H */

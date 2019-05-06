@@ -2828,3 +2828,35 @@ void zclient_interface_set_master(struct zclient *client,
 	stream_putw_at(s, 0, stream_get_endp(s));
 	zclient_send_message(client);
 }
+
+/* Send capabilities message to zebra */
+int zclient_capabilities_send(uint32_t cmd, struct zclient *zclient,
+		struct zapi_cap *api)
+{
+	struct stream *s;
+
+	if (zclient == NULL)
+		return -1;
+
+	s = zclient->obuf;
+	stream_reset(s);
+	zclient_create_header(s, cmd, 0);
+	stream_putl(s, api->cap);
+	stream_putl(s, api->stale_removal_time);
+
+	/* Put length at the first point of the stream */
+	stream_putw_at(s, 0, stream_get_endp(s));
+
+	return zclient_send_message(zclient);
+}
+
+/* Process capabilities message from zebra */
+int zapi_capabilities_decode(struct stream *s, struct zapi_cap *api)
+{
+	memset(api, 0, sizeof(*api));
+
+	STREAM_GETL(s, api->cap);
+	STREAM_GETL(s, api->stale_removal_time);
+stream_failure:
+	return 0;
+}

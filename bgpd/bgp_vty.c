@@ -2019,6 +2019,12 @@ DEFUN (bgp_graceful_restart,
 
 	ret = bgp_gr_update_all(bgp, GLOBAL_GR_CMD);
 
+	if (ret == BGP_GR_SUCCESS) {
+		/* Send graceful restart capability */
+		if (bgp_zebra_send_capabilities(bgp, true))
+			ret = BGP_ERR_INVALID_VALUE;
+	}
+
 	if (BGP_DEBUG(graceful_restart, GRACEFUL_RESTART))
 		zlog_debug("BGP_GR:: bgp_graceful_restart_cmd : END ");
 	return bgp_vty_return(vty, ret);
@@ -2394,6 +2400,54 @@ DEFUN (no_bgp_graceful_restart_preserve_fw,
 {
 	VTY_DECLVAR_CONTEXT(bgp, bgp);
 	bgp_flag_unset(bgp, BGP_FLAG_GR_PRESERVE_FWD);
+	return CMD_SUCCESS;
+}
+
+DEFUN (bgp_graceful_restart_rib_stale_time,
+       bgp_graceful_restart_rib_stale_time_cmd,
+       "bgp graceful-restart rib-stale-time (1-3600)",
+       "BGP specific commands\n"
+       "Graceful restart configuration parameters\n"
+       "Specify the stale route removal timer in rib\n"
+       "Delay value (seconds)\n")
+{
+	VTY_DECLVAR_CONTEXT(bgp, bgp);
+	int idx_number = 3;
+	uint32_t stale_time;
+
+	stale_time = strtoul(argv[idx_number]->arg, NULL, 10);
+	/* Send capabilities to zebra since the peers might not
+	 * be configured initially
+	 */
+	if (bgp->rib_stale_time != stale_time) {
+		bgp->rib_stale_time = stale_time;
+		if (bgp_zebra_send_capabilities(bgp, true) == BGP_GR_SUCCESS)
+			return CMD_SUCCESS;
+		else
+			return CMD_WARNING;
+	}
+	bgp->rib_stale_time = stale_time;
+	return CMD_SUCCESS;
+}
+
+DEFUN (no_bgp_graceful_restart_rib_stale_time,
+       no_bgp_graceful_restart_rib_stale_time_cmd,
+       "no bgp graceful-restart rib-stale-time [(1-3600)]",
+       NO_STR
+       "BGP specific commands\n"
+       "Graceful restart configuration parameters\n"
+       "Specify the stale route removal timer in rib\n"
+       "Delay value (seconds)\n")
+{
+	VTY_DECLVAR_CONTEXT(bgp, bgp);
+	/* If the timer is changed, send capabilities to RIB */
+	if (bgp->rib_stale_time != BGP_DEFAULT_RIB_STALE_TIME) {
+		bgp->rib_stale_time = BGP_DEFAULT_RIB_STALE_TIME;
+		if (bgp_zebra_send_capabilities(bgp, true))
+			return CMD_SUCCESS;
+		else
+			return CMD_WARNING;
+	}
 	return CMD_SUCCESS;
 }
 
@@ -14023,6 +14077,8 @@ void bgp_vty_init(void)
 	install_element(BGP_NODE, &no_bgp_graceful_restart_select_defer_time_cmd);
 	install_element(BGP_NODE, &bgp_graceful_restart_preserve_fw_cmd);
 	install_element(BGP_NODE, &no_bgp_graceful_restart_preserve_fw_cmd);
+	install_element(BGP_NODE, &bgp_graceful_restart_rib_stale_time_cmd);
+	install_element(BGP_NODE, &no_bgp_graceful_restart_rib_stale_time_cmd);
 
 	/* "bgp graceful-shutdown" commands */
 	install_element(BGP_NODE, &bgp_graceful_shutdown_cmd);

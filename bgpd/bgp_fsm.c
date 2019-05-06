@@ -1569,6 +1569,9 @@ static int bgp_reconnect(struct peer *peer)
 	if (bgp_stop(peer) < 0)
 		return -1;
 
+	/* Send graceful restart capabilty */
+	bgp_check_send_gr_capability(peer->bgp);
+
 	bgp_start(peer);
 	return 0;
 }

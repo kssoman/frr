@@ -64,6 +64,10 @@
 #define ZEBRA_FEC_REGISTER_LABEL          0x1
 #define ZEBRA_FEC_REGISTER_LABEL_INDEX    0x2
 
+/* Client Graceful Restart */
+#define ZEBRA_CLIENT_GR_CAPABILITIES   0x1
+#define ZEBRA_CLIENT_GR_ENABLED(X) (X & ZEBRA_CLIENT_GR_CAPABILITIES)
+
 extern struct sockaddr_storage zclient_addr;
 extern socklen_t zclient_addr_len;
 
@@ -166,6 +170,7 @@ typedef enum {
 	ZEBRA_VXLAN_FLOOD_CONTROL,
 	ZEBRA_VXLAN_SG_ADD,
 	ZEBRA_VXLAN_SG_DEL,
+	ZEBRA_CLIENT_CAPABILITIES,
 } zebra_message_types_t;
 
 struct redist_proto {
@@ -177,6 +182,12 @@ struct zclient_capabilities {
 	uint32_t ecmp;
 	bool mpls_enabled;
 	enum mlag_role role;
+};
+
+/* Graceful Restart Capabilities message */
+struct zapi_cap {
+	uint32_t  cap;
+	uint32_t  stale_removal_time;
 };
 
 /* Structure for the zebra client. */
@@ -631,7 +642,9 @@ bool zapi_iptable_notify_decode(struct stream *s,
 extern struct nexthop *nexthop_from_zapi_nexthop(struct zapi_nexthop *znh);
 extern bool zapi_nexthop_update_decode(struct stream *s,
 				       struct zapi_route *nhr);
-
+extern int zclient_capabilities_send(uint32_t cmd, struct zclient *zclient,
+				     struct zapi_cap *api);
+extern int zapi_capabilities_decode(struct stream *s, struct zapi_cap *api);
 static inline void zapi_route_set_blackhole(struct zapi_route *api,
 					    enum blackhole_type bh_type)
 {
