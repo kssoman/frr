@@ -1021,7 +1021,7 @@ struct peer {
 
 	/* BGP-GR Peer related  flags */
 #define PEER_FLAG_GRACEFUL_RESTART_HELPER	(1 << 16) /* Helper */
-#define PEER_FLAG_GRACEFUL_RESTART			(1 << 17) /* Graceful Restart */
+#define PEER_FLAG_GRACEFUL_RESTART		(1 << 17) /* Graceful Restart */
 #define PEER_FLAG_GRACEFUL_RESTART_GLOBAL_INHERIT (1 << 18) /* Global-Inherit */
 
 	/*
