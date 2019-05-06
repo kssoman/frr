@@ -3006,6 +3006,7 @@ int rib_add(afi_t afi, safi_t safi, vrf_id_t vrf_id, int type,
 {
 	struct route_entry *re;
 	struct nexthop *nexthop;
+	struct timeval tv;
 
 	/* Allocate new route_entry structure. */
 	re = XCALLOC(MTYPE_RE, sizeof(struct route_entry));
@@ -3018,7 +3019,7 @@ int rib_add(afi_t afi, safi_t safi, vrf_id_t vrf_id, int type,
 	re->table = table_id;
 	re->vrf_id = vrf_id;
 	re->nexthop_num = 0;
-	re->uptime = time(NULL);
+	re->uptime = monotime(&tv);
 	re->tag = tag;
 
 	/* Add nexthop. */
@@ -3524,4 +3525,192 @@ struct route_table *rib_tables_iter_next(rib_tables_iter_t *iter)
 		iter->state = RIB_TABLES_ITER_S_DONE;
 
 	return table;
+}
+
+/* Set the stale flag or delete the route entry */
+static void zebra_process_route_entry(struct stale_client *s,
+				      struct route_node *rn,
+				      struct route_entry *re, int type)
+{
+	char buf[PREFIX2STR_BUFFER];
+	bool delete = false;
+
+	if ((s == NULL) || (rn == NULL) || (re == NULL))
+		return;
+
+	if (CHECK_FLAG(re->status, ROUTE_ENTRY_STALE))
+		delete = true;
+
+	/* If client restarted after route refresh, reset the refresh flag
+	 * and set stale flag
+	 */
+	if ((re->uptime < s->restart_time) &&
+			CHECK_FLAG(re->status, ROUTE_ENTRY_REFRESH)) {
+		UNSET_FLAG(re->status, ROUTE_ENTRY_REFRESH);
+		SET_FLAG(re->status, ROUTE_ENTRY_STALE);
+	}
+
+	if (IS_ZEBRA_DEBUG_RIB)
+		prefix2str(&rn->p, buf, sizeof(buf));
+
+	/* Stale marker timer context */
+	if (type == ZEBRA_STALE_ROUTE_MARKER) {
+		/* If route not refreshed, mark stale */
+		if (!CHECK_FLAG(re->status, ROUTE_ENTRY_REFRESH)) {
+			SET_FLAG(re->status, ROUTE_ENTRY_STALE);
+			if (IS_ZEBRA_DEBUG_RIB)
+				zlog_debug("%s : ROUTE_ENTRY_STALE", buf);
+		} else
+			/* Reset stale flag */
+			UNSET_FLAG(re->status, ROUTE_ENTRY_STALE);
+		/* Delete the route */
+		if ((s->delete_stale_route == true) &&
+				CHECK_FLAG(re->status, ROUTE_ENTRY_STALE))
+			delete = true;
+	} else if (type == ZEBRA_STALE_ROUTE_DELETE) {
+		/* Stale delete timer context
+		 * If ROUTE_ENTRY_REFRESH is set, skip the entry
+		 */
+		if (CHECK_FLAG(re->status, ROUTE_ENTRY_REFRESH)) {
+			UNSET_FLAG(re->status, ROUTE_ENTRY_REFRESH);
+			if (IS_ZEBRA_DEBUG_RIB)
+				zlog_debug("%s : ROUTE_ENTRY_REFRESH", buf);
+			return;
+		}
+	}
+
+	/* Delete route entry */
+	if (delete) {
+		if (IS_ZEBRA_DEBUG_RIB)
+			zlog_debug("%s : deleting route %s",
+				(type == ZEBRA_STALE_ROUTE_DELETE) ?
+				 "Delete Timer" : "Marker Timer", buf);
+		rib_delnode(rn, re);
+	}
+}
+
+/* This function walks through the route table for all vrf and deletes
+ * the stale routes for the restarted client specified by the protocol
+ * type
+ */
+static int zebra_delete_stale_route(struct stale_client *s,
+				    struct zebra_vrf *zvrf, int type)
+{
+	struct route_node *rn, *curr;
+	struct route_entry *re;
+	struct route_entry *next;
+	struct route_table *table;
+	int n = 0;
+	struct prefix *p;
+	afi_t afi, curr_afi;
+	unsigned char proto;
+	unsigned short instance;
+
+	if ((s == NULL) || (s->client == NULL) || (zvrf == NULL))
+		return -1;
+
+	if (IS_ZEBRA_DEBUG_RIB)
+		zlog_debug("%s : type %d", __func__, type);
+
+	proto = s->client->proto;
+	instance = s->client->instance;
+	curr_afi = s->current_afi[type];
+	p = s->current_prefix[type];
+
+	/* Process routes for all AFI */
+	for (afi = curr_afi; afi < AFI_MAX; afi++) {
+		table = zvrf->table[afi][SAFI_UNICAST];
+
+		if (table) {
+			/* If the current prefix is NULL then get the first
+			 * route entry in the table
+			 */
+			if (p == NULL) {
+				rn = route_top(table);
+				if (rn == NULL)
+					continue;
+				p = XCALLOC(MTYPE_TMP, sizeof(struct prefix));
+				if (p == NULL)
+					return -1;
+				curr = rn;
+				prefix_copy(p, &rn->p);
+			} else
+				/* Get the next route entry */
+				curr = route_table_get_next(table, p);
+
+			for (rn = curr; rn; rn = srcdest_route_next(rn)) {
+				RNODE_FOREACH_RE_SAFE (rn, re, next) {
+					if (CHECK_FLAG(re->status,
+							ROUTE_ENTRY_REMOVED))
+						continue;
+					/* If the route refresh is received
+					 * after restart then do not delete
+					 * the route
+					 */
+					if (re->type == proto &&
+					    re->instance == instance) {
+						zebra_process_route_entry(s,
+								rn, re, type);
+						n++;
+					}
+					/* If the max route count is reached
+					 * then timer thread will be restarted
+					 * Store the current prefix and afi
+					 */
+					if (n >= ZEBRA_MAX_STALE_ROUTE_COUNT) {
+						prefix_copy(p, &rn->p);
+						s->current_afi[type] = afi;
+						s->current_prefix[type] = p;
+						return n;
+					}
+				}
+			}
+		}
+		/* Reset the current prefix to indicate processing completion
+		 * of the current AFI
+		 */
+		if (s->current_prefix[type]) {
+			XFREE(MTYPE_TMP, s->current_prefix[type]);
+			s->current_prefix[type] = NULL;
+		}
+		continue;
+	}
+	return 0;
+}
+
+/* Delete the stale routes when client is restarted and routes are not
+ * refreshed within the stale timeout
+ */
+int zebra_graceful_restart_delete_stale_routes(struct stale_client *s, int type)
+{
+	struct vrf *vrf;
+	struct zebra_vrf *zvrf;
+	unsigned long cnt = 0;
+	vrf_id_t next_vrf_id = 0;
+	int ret;
+
+	if ((s == NULL) || (s->client == NULL))
+		return -1;
+
+	/* Get the current VRF */
+	vrf = vrf_lookup_by_id(s->current_vrf_id[type]);
+	while (vrf) {
+		zvrf = vrf->info;
+		if (zvrf != NULL)
+			cnt = zebra_delete_stale_route(s, zvrf, type);
+
+		if (cnt >= ZEBRA_MAX_STALE_ROUTE_COUNT)
+			return cnt;
+
+		/* Get the next vrfid */
+		if (cnt == 0) {
+			ret = vrf_id_get_next(vrf->vrf_id, &next_vrf_id);
+			if (ret) {
+				vrf = vrf_lookup_by_id(next_vrf_id);
+				s->current_vrf_id[type] = next_vrf_id;
+			} else
+				return -1;
+		}
+	}
+	return cnt;
 }

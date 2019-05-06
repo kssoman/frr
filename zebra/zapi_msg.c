@@ -1362,6 +1362,7 @@ static void zread_route_add(ZAPI_HANDLER_ARGS)
 	int i, ret;
 	vrf_id_t vrf_id = 0;
 	struct ipaddr vtep_ip;
+	struct timeval tv;
 
 	s = msg;
 	if (zapi_route_decode(s, &api) < 0) {
@@ -1388,12 +1389,16 @@ static void zread_route_add(ZAPI_HANDLER_ARGS)
 	re->type = api.type;
 	re->instance = api.instance;
 	re->flags = api.flags;
-	re->uptime = time(NULL);
+	re->uptime = monotime(&tv);
 	re->vrf_id = vrf_id;
 	if (api.tableid && vrf_id == VRF_DEFAULT)
 		re->table = api.tableid;
 	else
 		re->table = zvrf->table_id;
+
+	/* If stale timers running, set flag ROUTE_ENTRY_REFRESH */
+	if (client->t_stale_marker)
+		SET_FLAG(re->status, ROUTE_ENTRY_REFRESH);
 
 	if (!CHECK_FLAG(api.message, ZAPI_MESSAGE_NEXTHOP)
 	    || api.nexthop_num == 0) {
@@ -1697,6 +1702,8 @@ static void zread_hello(ZAPI_HANDLER_ARGS)
 		client->instance = instance;
 	}
 
+	/* Graceful restart processing for client connect */
+	zebra_graceful_restart_client_reconnect(client);
 	zsend_capabilities(client, zvrf);
 	zebra_vrf_update_all(client);
 stream_failure:
@@ -2407,6 +2414,27 @@ stream_failure:
 	return;
 }
 
+/* Process capabilites message from client */
+static void zread_client_capabilities(ZAPI_HANDLER_ARGS)
+{
+	struct zapi_cap api;
+	struct stream *s;
+
+	s = msg;
+
+	if (zapi_capabilities_decode(s, &api)) {
+		if (IS_ZEBRA_DEBUG_EVENT)
+			zlog_debug("error in reading capabilities");
+		return;
+	}
+
+	client->capabilities = api.cap;
+	client->stale_removal_time = api.stale_removal_time;
+	if (IS_ZEBRA_DEBUG_EVENT)
+		zlog_debug("received cap %d, stale time %d", api.cap,
+				api.stale_removal_time);
+}
+
 void (*zserv_handlers[])(ZAPI_HANDLER_ARGS) = {
 	[ZEBRA_ROUTER_ID_ADD] = zread_router_id_add,
 	[ZEBRA_ROUTER_ID_DELETE] = zread_router_id_delete,
@@ -2475,6 +2503,7 @@ void (*zserv_handlers[])(ZAPI_HANDLER_ARGS) = {
 	[ZEBRA_IPTABLE_ADD] = zread_iptable,
 	[ZEBRA_IPTABLE_DELETE] = zread_iptable,
 	[ZEBRA_VXLAN_FLOOD_CONTROL] = zebra_vxlan_flood_control,
+	[ZEBRA_CLIENT_CAPABILITIES] = zread_client_capabilities,
 };
 
 #if defined(HANDLE_ZAPI_FUZZING)

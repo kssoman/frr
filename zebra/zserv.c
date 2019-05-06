@@ -568,6 +568,202 @@ int zserv_send_message(struct zserv *client, struct stream *msg)
 	return 0;
 }
 
+/* Delete the stale routes */
+static int zebra_stale_route_delete_timer(struct thread *thread)
+{
+	struct stale_client *s;
+	int cnt = 0;
+
+	s = THREAD_ARG(thread);
+	s->client->t_stale_removal = NULL;
+
+	/* If stale marker timer is running, set delete flag which will
+	 * enable route deletion in stale marker timer context
+	 */
+	if (s->client->t_stale_marker != NULL) {
+		s->delete_stale_route = true;
+		return 0;
+	}
+
+	/* Set the stale flag */
+	cnt = zebra_graceful_restart_delete_stale_routes(s,
+			ZEBRA_STALE_ROUTE_DELETE);
+
+	/* Retsart the timer */
+	if (cnt > 0) {
+		thread_add_timer(zrouter.master, zebra_stale_route_delete_timer,
+				s, ZEBRA_DEFAULT_STALE_UPDATE_DELAY,
+				&s->client->t_stale_removal);
+		if (IS_ZEBRA_DEBUG_EVENT)
+			zlog_debug("started stale delete timer %p",
+					s->client->t_stale_removal);
+	} else {
+		/* No routes to delete */
+		if (IS_ZEBRA_DEBUG_EVENT)
+			zlog_debug("%s : no routes to process", __func__);
+		if (s->current_prefix[ZEBRA_STALE_ROUTE_DELETE] != NULL)
+			XFREE(MTYPE_TMP,
+			      s->current_prefix[ZEBRA_STALE_ROUTE_DELETE]);
+		s->current_prefix[ZEBRA_STALE_ROUTE_DELETE] = NULL;
+		s->current_vrf_id[ZEBRA_STALE_ROUTE_DELETE] = 0;
+		s->current_afi[ZEBRA_STALE_ROUTE_DELETE] = 0;
+
+		/* If stale marker timer is not running, delete the
+		 * stale client
+		 */
+		if (s->client->t_stale_marker == NULL) {
+			if (IS_ZEBRA_DEBUG_EVENT)
+				zlog_debug("deleting stale client %p", s);
+			listnode_delete(zrouter.stale_client_list, s);
+			XFREE(MTYPE_TMP, s);
+		}
+	}
+	return 0;
+}
+
+/* Mark the routes as stale */
+static int zebra_stale_route_mark_timer(struct thread *thread)
+{
+	struct stale_client *s;
+	int cnt = 0;
+
+	s = THREAD_ARG(thread);
+	s->client->t_stale_marker = NULL;
+
+	/* Set the stale flag */
+	cnt = zebra_graceful_restart_delete_stale_routes(s,
+			ZEBRA_STALE_ROUTE_MARKER);
+
+	/* Retsart the timer if there are more routes */
+	if (cnt > 0) {
+		thread_add_timer(zrouter.master, zebra_stale_route_mark_timer,
+				s, ZEBRA_DEFAULT_STALE_UPDATE_DELAY,
+				&s->client->t_stale_marker);
+		if (IS_ZEBRA_DEBUG_EVENT)
+			zlog_debug("started stale marker timer %p",
+					s->client->t_stale_marker);
+	} else {
+		/* No routes to be processed */
+		if (IS_ZEBRA_DEBUG_EVENT)
+			zlog_debug("%s : no routes to process", __func__);
+
+		if (s->current_prefix[ZEBRA_STALE_ROUTE_MARKER] != NULL)
+			XFREE(MTYPE_TMP,
+			      s->current_prefix[ZEBRA_STALE_ROUTE_MARKER]);
+		s->current_prefix[ZEBRA_STALE_ROUTE_MARKER] = NULL;
+		s->current_vrf_id[ZEBRA_STALE_ROUTE_MARKER] = 0;
+		s->current_afi[ZEBRA_STALE_ROUTE_MARKER] = 0;
+		/* If delete_stale_route is set, it indicates deletion of the
+		 * routes was done in stale marker timer context.
+		 * Start the stale delete timer when stale marker timer is not
+		 * running to delete the pending stale routes
+		 */
+		if (s->delete_stale_route) {
+			if (s->client->t_stale_removal == NULL) {
+				if (IS_ZEBRA_DEBUG_EVENT)
+					zlog_debug("Started stale delete timer");
+				thread_add_timer(zrouter.master,
+					zebra_stale_route_delete_timer,
+					s, ZEBRA_DEFAULT_STALE_UPDATE_DELAY,
+					&s->client->t_stale_removal);
+			}
+		}
+	}
+	return 0;
+}
+
+/* Clear the stale information for restarted client */
+static void zebra_process_client_restart_clear(struct zserv *client)
+{
+	struct listnode *node, *nnode;
+	struct stale_client *s = NULL;
+	struct zserv *old_client = NULL;
+
+	/* Find the stale client */
+	for (ALL_LIST_ELEMENTS(zrouter.stale_client_list, node, nnode, s)) {
+		if (client->proto == s->client->proto &&
+				client->instance == s->client->instance)
+			break;
+	}
+
+	if (s)
+		old_client = s->client;
+	else
+		return;
+
+	/* Cancel the existing timers */
+	if (old_client) {
+		if (old_client->t_stale_marker != NULL) {
+			thread_cancel(old_client->t_stale_marker);
+			old_client->t_stale_marker = NULL;
+		}
+
+		if (old_client->t_stale_removal != NULL) {
+			thread_cancel(old_client->t_stale_removal);
+			old_client->t_stale_removal = NULL;
+		}
+
+		/* Delete old client */
+		if (old_client != client)
+			XFREE(MTYPE_TMP, old_client);
+	}
+
+	/* Delete the prefix */
+	if (s->current_prefix[ZEBRA_STALE_ROUTE_MARKER] != NULL)
+		XFREE(MTYPE_TMP,
+				s->current_prefix[ZEBRA_STALE_ROUTE_MARKER]);
+
+	if (s->current_prefix[ZEBRA_STALE_ROUTE_DELETE] != NULL)
+		XFREE(MTYPE_TMP,
+				s->current_prefix[ZEBRA_STALE_ROUTE_DELETE]);
+
+	/* Delete the stale client */
+	listnode_delete(zrouter.stale_client_list, s);
+	XFREE(MTYPE_TMP, s);
+}
+
+/* Processing for client which is restart capable */
+static int zebra_graceful_restart_client_disconnect(struct zserv *client)
+{
+	struct stale_client *s;
+	int i;
+	struct timeval tv;
+
+	/* If client is already restarted, clear the old information */
+	zebra_process_client_restart_clear(client);
+
+	s = XCALLOC(MTYPE_TMP, sizeof(struct stale_client));
+	if (s == NULL) {
+		if (IS_ZEBRA_DEBUG_EVENT)
+			zlog_debug("%s : error in alloc", __func__);
+		return -1;
+	}
+
+	/* Initialize the stale client information */
+	s->client = client;
+	for (i = 0; i < ZEBRA_STALE_ROUTE_ACTION; i++) {
+		s->current_vrf_id[i] = 0;
+		s->current_afi[i] = AFI_IP;
+		s->current_prefix[i] = NULL;
+		s->restart_time = monotime(&tv);
+	}
+	client->stale_client_ptr = s;
+
+	/* Start the stale marker timer */
+	if (client->t_stale_marker == NULL)
+		thread_add_timer(zrouter.master, zebra_stale_route_mark_timer,
+				s, ZEBRA_DEFAULT_STALE_UPDATE_DELAY,
+				&s->client->t_stale_marker);
+
+	/* Start stale removal timer */
+	if (client->t_stale_removal == NULL)
+		thread_add_timer(zrouter.master, zebra_stale_route_delete_timer,
+				s, client->stale_removal_time,
+				&s->client->t_stale_removal);
+
+	listnode_add(zrouter.stale_client_list, s);
+	return 0;
+}
 
 /* Hooks for client connect / disconnect */
 DEFINE_HOOK(zserv_client_connect, (struct zserv *client), (client));
@@ -587,6 +783,9 @@ DEFINE_KOOH(zserv_client_close, (struct zserv *client), (client));
  */
 static void zserv_client_free(struct zserv *client)
 {
+	if (client == NULL)
+		return;
+
 	hook_call(zserv_client_close, client);
 
 	/* Close file descriptor. */
@@ -595,11 +794,17 @@ static void zserv_client_free(struct zserv *client)
 
 		close(client->sock);
 
-		nroutes = rib_score_proto(client->proto, client->instance);
-		zlog_notice(
-			"client %d disconnected. %lu %s routes removed from the rib",
-			client->sock, nroutes,
-			zebra_route_string(client->proto));
+		/* If the client is graceful restart enabled then routes
+		 * are not deleted
+		 */
+		if (!ZEBRA_CLIENT_GR_ENABLED(client->capabilities)) {
+			nroutes = rib_score_proto(client->proto,
+						  client->instance);
+			zlog_notice(
+				"client %d disconnected. %lu %s routes removed from the rib",
+				client->sock, nroutes,
+				zebra_route_string(client->proto));
+		}
 		client->sock = -1;
 	}
 
@@ -628,7 +833,18 @@ static void zserv_client_free(struct zserv *client)
 	}
 	vrf_bitmap_free(client->ridinfo);
 
-	XFREE(MTYPE_TMP, client);
+	if (!ZEBRA_CLIENT_GR_ENABLED(client->capabilities)) {
+		if (IS_ZEBRA_DEBUG_EVENT)
+			zlog_debug("Deleting client %s",
+				    zebra_route_string(client->proto));
+		XFREE(MTYPE_TMP, client);
+	} else {
+		if (IS_ZEBRA_DEBUG_EVENT)
+			zlog_debug("client %s restart enabled",
+					zebra_route_string(client->proto));
+		if (zebra_graceful_restart_client_disconnect(client) < 0)
+			zlog_debug("Error in %s", __func__);
+	}
 }
 
 void zserv_close_client(struct zserv *client)
@@ -653,6 +869,34 @@ void zserv_close_client(struct zserv *client)
 
 	/* delete client */
 	zserv_client_free(client);
+}
+
+/* Graceful restart processing for client when it established connection
+ * to RIB
+ */
+void zebra_graceful_restart_client_reconnect(struct zserv *client)
+{
+	struct listnode *node, *nnode;
+	struct stale_client *s = NULL;
+
+	/* Find the stale client */
+	for (ALL_LIST_ELEMENTS(zrouter.stale_client_list, node, nnode, s)) {
+		if (client->proto == s->client->proto &&
+				client->instance == s->client->instance)
+			break;
+	}
+
+	/* Copy the timers */
+	if (s && s->client) {
+		if (IS_ZEBRA_DEBUG_EVENT)
+			zlog_debug("%s : old client %p, client %p", __func__,
+					s->client, client);
+		client->t_stale_removal = s->client->t_stale_removal;
+		client->t_stale_marker = s->client->t_stale_marker;
+		/* Delete old client */
+		XFREE(MTYPE_TMP, s->client);
+		s->client = client;
+	}
 }
 
 /*
@@ -978,11 +1222,102 @@ static void zebra_show_client_detail(struct vty *vty, struct zserv *client)
 	vty_out(vty, "MAC-IP add notifications: %d\n", client->macipadd_cnt);
 	vty_out(vty, "MAC-IP delete notifications: %d\n", client->macipdel_cnt);
 
+	vty_out(vty, "Capabilities : ");
+	switch (client->capabilities) {
+	case ZEBRA_CLIENT_GR_CAPABILITIES:
+		vty_out(vty, "Graceful Restart\n");
+		break;
+	default:
+		vty_out(vty, "None\n");
+		break;
+	}
 #if defined DEV_BUILD
 	vty_out(vty, "Input Fifo: %zu:%zu Output Fifo: %zu:%zu\n",
 		client->ibuf_fifo->count, client->ibuf_fifo->max_count,
 		client->obuf_fifo->count, client->obuf_fifo->max_count);
 #endif
+	vty_out(vty, "\n");
+}
+
+/* Display stale client information */
+static void zebra_show_stale_client_detail(struct vty *vty,
+					   struct stale_client *s)
+{
+	struct zserv *client;
+	char buf[PREFIX2STR_BUFFER];
+	struct tm *tm;
+	struct timeval tv;
+	time_t uptime;
+
+	if (s == NULL)
+		return;
+
+	client = s->client;
+	vty_out(vty, "Client: %s", zebra_route_string(client->proto));
+	if (client->instance)
+		vty_out(vty, " Instance: %d", client->instance);
+	vty_out(vty, "\n");
+	vty_out(vty, "------------------------\n");
+	vty_out(vty, "Capabilities : ");
+	switch (client->capabilities) {
+	case ZEBRA_CLIENT_GR_CAPABILITIES:
+		vty_out(vty, "Graceful Restart\n");
+		break;
+	default:
+		vty_out(vty, "None\n");
+		break;
+	}
+	/* Graceful Restart information */
+	if (ZEBRA_CLIENT_GR_ENABLED(client->capabilities)) {
+		uptime = monotime(&tv);
+		uptime -= s->restart_time;
+		tm = gmtime(&uptime);
+		vty_out(vty, "Last restart time : ");
+		if (uptime < ONE_DAY_SECOND)
+			vty_out(vty, "%02d:%02d:%02d", tm->tm_hour,
+					tm->tm_min, tm->tm_sec);
+		else if (uptime < ONE_WEEK_SECOND)
+			vty_out(vty, "%dd%02dh%02dm", tm->tm_yday,
+					tm->tm_hour, tm->tm_min);
+		else
+			vty_out(vty, "%02dw%dd%02dh", tm->tm_yday / 7,
+					tm->tm_yday - ((tm->tm_yday / 7) * 7),
+					tm->tm_hour);
+		vty_out(vty, "  ago\n");
+
+		vty_out(vty, "Stalepath removal time : %d sec\n",
+				client->stale_removal_time);
+		if (client->t_stale_marker)
+			vty_out(vty, "Stale marker timer running\n");
+
+		if (client->t_stale_removal) {
+			vty_out(vty, "Stale delete timer running ");
+			vty_out(vty, "remaining time : %ld sec\n",
+				thread_timer_remain_second(
+					client->t_stale_removal));
+		}
+
+		vty_out(vty, "Stale marker current VRF : %d\n",
+				s->current_vrf_id[ZEBRA_STALE_ROUTE_MARKER]);
+		vty_out(vty, "Stale marker current AFI : %d\n",
+				s->current_afi[ZEBRA_STALE_ROUTE_MARKER]);
+		if (s->current_prefix[ZEBRA_STALE_ROUTE_MARKER]) {
+			prefix2str(s->current_prefix[ZEBRA_STALE_ROUTE_MARKER],
+					buf, sizeof(buf));
+			vty_out(vty, "Stale marker current prefix : %s\n",
+					buf);
+		}
+		vty_out(vty, "Stale delete current VRF : %d\n",
+				s->current_vrf_id[ZEBRA_STALE_ROUTE_DELETE]);
+		vty_out(vty, "Stale delete current AFI : %d\n",
+				s->current_afi[ZEBRA_STALE_ROUTE_DELETE]);
+		if (s->current_prefix[ZEBRA_STALE_ROUTE_DELETE]) {
+			prefix2str(s->current_prefix[ZEBRA_STALE_ROUTE_DELETE],
+					buf, sizeof(buf));
+			vty_out(vty, "Stale delete current prefix : %s\n",
+					buf);
+		}
+	}
 	vty_out(vty, "\n");
 	return;
 }
@@ -1032,11 +1367,18 @@ DEFUN (show_zebra_client,
        ZEBRA_STR
        "Client information\n")
 {
-	struct listnode *node;
 	struct zserv *client;
+	struct listnode *node, *nnode;
+	struct stale_client *s;
 
 	for (ALL_LIST_ELEMENTS_RO(zrouter.client_list, node, client))
 		zebra_show_client_detail(vty, client);
+
+	/* Find the stale client */
+	vty_out(vty, "Stale Client Information\n");
+	vty_out(vty, "------------------------\n");
+	for (ALL_LIST_ELEMENTS(zrouter.stale_client_list, node, nnode, s))
+		zebra_show_stale_client_detail(vty, s);
 
 	return CMD_SUCCESS;
 }
@@ -1082,6 +1424,7 @@ void zserv_init(void)
 {
 	/* Client list init. */
 	zrouter.client_list = list_new();
+	zrouter.stale_client_list = list_new();
 
 	/* Misc init. */
 	zsock = -1;

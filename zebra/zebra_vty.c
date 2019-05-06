@@ -229,8 +229,9 @@ static void vty_show_ip_route_detail(struct vty *vty, struct route_node *rn,
 
 		time_t uptime;
 		struct tm *tm;
+		struct timeval tv;
 
-		uptime = time(NULL);
+		uptime = monotime(&tv);
 		uptime -= re->uptime;
 		tm = gmtime(&uptime);
 
@@ -384,8 +385,9 @@ static void vty_show_ip_route(struct vty *vty, struct route_node *rn,
 	time_t uptime;
 	struct tm *tm;
 	rib_dest_t *dest = rib_dest_from_rnode(rn);
+	struct timeval tv;
 
-	uptime = time(NULL);
+	uptime = monotime(&tv);
 	uptime -= re->uptime;
 	tm = gmtime(&uptime);
 
@@ -442,6 +444,10 @@ static void vty_show_ip_route(struct vty *vty, struct route_node *rn,
 			sprintf(buf, "%02dw%dd%02dh", tm->tm_yday / 7,
 				tm->tm_yday - ((tm->tm_yday / 7) * 7),
 				tm->tm_hour);
+
+		/* Stale route */
+		if (CHECK_FLAG(re->status, ROUTE_ENTRY_STALE))
+			json_object_string_add(json_route, "status", "stale");
 
 		json_object_string_add(json_route, "uptime", buf);
 
@@ -733,6 +739,10 @@ static void vty_show_ip_route(struct vty *vty, struct route_node *rn,
 					       nexthop->nh_label->label, buf,
 					       sizeof buf, 1));
 		}
+
+		/* Stale route */
+		if (CHECK_FLAG(re->status, ROUTE_ENTRY_STALE))
+			vty_out(vty, ", (stale)");
 
 		if (uptime < ONE_DAY_SECOND)
 			vty_out(vty, ", %02d:%02d:%02d", tm->tm_hour,
@@ -1338,6 +1348,7 @@ static void vty_show_ip_route_summary(struct vty *vty,
 	uint32_t fib_cnt[ZEBRA_ROUTE_TOTAL + 1];
 	uint32_t i;
 	uint32_t is_ibgp;
+	uint32_t stale_cnt = 0;
 
 	memset(&rib_cnt, 0, sizeof(rib_cnt));
 	memset(&fib_cnt, 0, sizeof(fib_cnt));
@@ -1359,6 +1370,9 @@ static void vty_show_ip_route_summary(struct vty *vty,
 					fib_cnt[ZEBRA_ROUTE_IBGP]++;
 				else
 					fib_cnt[re->type]++;
+				/* Stale route count */
+				if (CHECK_FLAG(re->status, ROUTE_ENTRY_STALE))
+					stale_cnt++;
 			}
 		}
 
@@ -1385,6 +1399,8 @@ static void vty_show_ip_route_summary(struct vty *vty,
 	vty_out(vty, "------\n");
 	vty_out(vty, "%-20s %-20d %-20d \n", "Totals",
 		rib_cnt[ZEBRA_ROUTE_TOTAL], fib_cnt[ZEBRA_ROUTE_TOTAL]);
+	vty_out(vty, "------\n");
+	vty_out(vty, "%-20s %-20d\n", "Stale", stale_cnt);
 	vty_out(vty, "\n");
 }
 

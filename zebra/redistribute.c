@@ -576,6 +576,7 @@ int zebra_add_import_table_entry(struct route_node *rn, struct route_entry *re,
 	struct prefix p;
 	route_map_result_t ret = RMAP_MATCH;
 	afi_t afi;
+	struct timeval tv;
 
 	afi = family2afi(rn->p.family);
 	if (rmap_name)
@@ -614,7 +615,7 @@ int zebra_add_import_table_entry(struct route_node *rn, struct route_entry *re,
 	newre->mtu = re->mtu;
 	newre->table = zrouter.rtm_table_default;
 	newre->nexthop_num = 0;
-	newre->uptime = time(NULL);
+	newre->uptime = monotime(&tv);
 	newre->instance = re->table;
 	route_entry_copy_nexthops(newre, re->ng.nexthop);
 

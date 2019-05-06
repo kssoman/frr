@@ -99,6 +99,10 @@ struct route_entry {
 #define ROUTE_ENTRY_INSTALLED        0x20
 /* Route has Failed installation into the Data Plane in some manner */
 #define ROUTE_ENTRY_FAILED           0x40
+/* Route is marked as stale */
+#define ROUTE_ENTRY_STALE            0x80
+/* Route is refreshed */
+#define ROUTE_ENTRY_REFRESH          0x100
 
 	/* Nexthop information. */
 	uint8_t nexthop_num;

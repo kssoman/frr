@@ -69,6 +69,9 @@ struct zebra_router {
 	/* Lists of clients who have connected to us */
 	struct list *client_list;
 
+	/* List of clients in restart */
+	struct list *stale_client_list;
+
 	struct zebra_router_table_head tables;
 
 	/* L3-VNI hash table (for EVPN). Only in default instance */
@@ -138,6 +141,8 @@ extern void zebra_router_sweep_route(void);
 extern void zebra_router_show_table_summary(struct vty *vty);
 
 extern uint32_t zebra_router_get_next_sequence(void);
+
+extern void zebra_graceful_restart_client_reconnect(struct zserv *client);
 
 static inline vrf_id_t zebra_vrf_get_evpn_id(void)
 {
