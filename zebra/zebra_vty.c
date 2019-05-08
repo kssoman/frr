@@ -229,8 +229,9 @@ static void vty_show_ip_route_detail(struct vty *vty, struct route_node *rn,
 
 		time_t uptime;
 		struct tm *tm;
+		struct timeval tv;
 
-		uptime = time(NULL);
+		uptime = monotime_raw(&tv);
 		uptime -= re->uptime;
 		tm = gmtime(&uptime);
 
@@ -384,8 +385,9 @@ static void vty_show_ip_route(struct vty *vty, struct route_node *rn,
 	time_t uptime;
 	struct tm *tm;
 	rib_dest_t *dest = rib_dest_from_rnode(rn);
+	struct timeval tv;
 
-	uptime = time(NULL);
+	uptime = monotime_raw(&tv);
 	uptime -= re->uptime;
 	tm = gmtime(&uptime);
 
@@ -1385,7 +1387,6 @@ static void vty_show_ip_route_summary(struct vty *vty,
 	vty_out(vty, "------\n");
 	vty_out(vty, "%-20s %-20d %-20d \n", "Totals",
 		rib_cnt[ZEBRA_ROUTE_TOTAL], fib_cnt[ZEBRA_ROUTE_TOTAL]);
-	vty_out(vty, "\n");
 }
 
 /*

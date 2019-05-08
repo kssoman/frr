@@ -52,6 +52,12 @@ extern "C" {
 
 #define ZEBRA_RMAP_DEFAULT_UPDATE_TIMER 5 /* disabled by default */
 
+/* Stale route marker timer */
+#define ZEBRA_DEFAULT_STALE_UPDATE_DELAY 1
+
+/* Count of stale routes processed in timer context */
+#define ZEBRA_MAX_STALE_ROUTE_COUNT 50000
+
 /* Client structure. */
 struct zserv {
 	/* Client pthread */
@@ -166,6 +172,21 @@ struct zserv {
 	_Atomic uint32_t last_read_cmd;
 	/* command code of last message written */
 	_Atomic uint32_t last_write_cmd;
+	/* Graceful restart information */
+	uint32_t capabilities;
+	uint32_t stale_removal_time;
+	struct thread *t_stale_removal;
+	struct thread *t_stale_marker;
+	void *stale_client_ptr;
+};
+
+/* Stale client information */
+struct stale_client  {
+	struct    zserv *client;
+	vrf_id_t  current_vrf_id;
+	afi_t     current_afi;
+	struct prefix *current_prefix;
+	time_t restart_time;
 };
 
 #define ZAPI_HANDLER_ARGS                                                      \
@@ -239,8 +260,7 @@ extern struct zserv *zserv_find_client(uint8_t proto, unsigned short instance);
  *    the client to close
  */
 extern void zserv_close_client(struct zserv *client);
-
-
+extern int zebra_graceful_restart_delete_stale_routes(struct stale_client *s);
 /*
  * Log a ZAPI message hexdump.
  *
