@@ -2468,6 +2468,10 @@ static void bgp_zebra_connected(struct zclient *zclient)
 	/* TODO - What if we have peers and networks configured, do we have to
 	 * kick-start them?
 	 */
+	if (bgp_check_send_gr_capability(bgp)) {
+		if (BGP_DEBUG(graceful_restart, GRACEFUL_RESTART))
+			zlog_debug("%s : gr capability sent", __func__);
+	}
 }
 
 static int bgp_zebra_process_local_es(int cmd, struct zclient *zclient,
@@ -3030,4 +3034,48 @@ void bgp_zebra_announce_default(struct bgp *bgp, struct nexthop *nh,
 				   zclient, &api);
 		return;
 	}
+}
+
+/* Send capabilities to RIB */
+int bgp_zebra_send_capabilities(struct bgp *bgp, bool force)
+{
+	struct zapi_cap api;
+	int ret = BGP_GR_SUCCESS;
+
+	/* Check if capability is already sent. If the flag force is set
+	 * send the capability since this can be initial bgp configuration
+	 */
+	if ((bgp->gr_capability_sent == true) && (force == false)) {
+		if (BGP_DEBUG(zebra, ZEBRA))
+			zlog_debug("GR capability sent");
+		return BGP_GR_SUCCESS;
+	}
+
+	if (zclient == NULL) {
+		if (BGP_DEBUG(zebra, ZEBRA))
+			zlog_debug("zclient invalid");
+		return BGP_GR_FAILURE;
+	}
+
+	/* Check if the client is connected */
+	if ((zclient->sock < 0) || (zclient->t_connect)) {
+		if (BGP_DEBUG(zebra, ZEBRA))
+			zlog_debug("client not connected");
+		return BGP_GR_FAILURE;
+	}
+
+	api.cap = ZEBRA_CLIENT_GR_CAPABILITIES;
+	api.stale_removal_time = bgp->rib_stale_time;
+	if (zclient_capabilities_send(ZEBRA_CLIENT_CAPABILITIES,
+				zclient, &api) < 0) {
+		if (BGP_DEBUG(zebra, ZEBRA))
+			zlog_debug("error sending capability");
+		ret = BGP_GR_FAILURE;
+	} else {
+		bgp->gr_capability_sent = true;
+		if (BGP_DEBUG(zebra, ZEBRA))
+			zlog_debug("send capabilty success");
+		ret = BGP_GR_SUCCESS;
+	}
+	return ret;
 }

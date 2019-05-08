@@ -3075,6 +3075,7 @@ static struct bgp *bgp_create(as_t *as, const char *name,
 	bgp->restart_time = BGP_DEFAULT_RESTART_TIME;
 	bgp->stalepath_time = BGP_DEFAULT_STALEPATH_TIME;
 	bgp->select_defer_time = BGP_DEFAULT_SELECT_DEFERRAL_TIME;
+	bgp->rib_stale_time = BGP_DEFAULT_RIB_STALE_TIME;
 	bgp->dynamic_neighbors_limit = BGP_DYNAMIC_NEIGHBORS_LIMIT_DEFAULT;
 	bgp->dynamic_neighbors_count = 0;
 	bgp->ebgp_requires_policy = DEFAULT_EBGP_POLICY_DISABLED;
@@ -7930,7 +7931,11 @@ int bgp_config_write(struct vty *vty)
 		if (bgp_flag_check(bgp, BGP_FLAG_GR_PRESERVE_FWD))
 			vty_out(vty,
 				" bgp graceful-restart preserve-fw-state\n");
-
+		/* Stale timer for RIB */
+		if (bgp->rib_stale_time != BGP_DEFAULT_RIB_STALE_TIME)
+			vty_out(vty,
+				" bgp graceful-restart rib-stale-time %u\n",
+				bgp->rib_stale_time);
 		/* BGP bestpath method. */
 		if (bgp_flag_check(bgp, BGP_FLAG_ASPATH_IGNORE))
 			vty_out(vty, " bgp bestpath as-path ignore\n");
@@ -8309,4 +8314,26 @@ void bgp_gr_apply_running_config(void)
 	for (ALL_LIST_ELEMENTS(bm->bgp, node, nnode, bgp))
 		for (ALL_LIST_ELEMENTS(bgp->peer, node, nnode, peer))
 			bgp_peer_gr_flags_update(peer);
+}
+
+/* This function checks if any peer is graceful restart enabled and sends
+ * capability to zebra
+ */
+bool bgp_check_send_gr_capability(struct bgp *bgp)
+{
+	struct peer *peer;
+	struct listnode *node, *next;
+
+	/* Parse the peer list to check if any peer is graceful restart
+	 * enabled
+	 */
+	for (ALL_LIST_ELEMENTS(bgp->peer, node, next, peer))
+		if (bgp_peer_flag_check(peer, PEER_FLAG_GRACEFUL_RESTART)) {
+			if (BGP_DEBUG(graceful_restart, GRACEFUL_RESTART))
+				zlog_debug("sending graceful restart capabilities");
+			if (bgp_zebra_send_capabilities(bgp, false)
+						== BGP_GR_SUCCESS)
+				return true;
+		}
+		return false;
 }

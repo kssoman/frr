@@ -53,6 +53,17 @@ static inline time_t monotime(struct timeval *tvo)
 	return ts.tv_sec;
 }
 
+static inline time_t monotime_raw(struct timeval *tvo)
+{
+	struct timespec ts;
+
+	clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
+	if (tvo) {
+		TIMESPEC_TO_TIMEVAL(tvo, &ts);
+	}
+	return ts.tv_sec;
+}
+
 #define ONE_DAY_SECOND 60*60*24
 #define ONE_WEEK_SECOND ONE_DAY_SECOND*7
 #define ONE_YEAR_SECOND ONE_DAY_SECOND*365

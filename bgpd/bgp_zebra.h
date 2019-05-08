@@ -102,5 +102,5 @@ extern void bgp_send_pbr_iptable(struct bgp_pbr_action *pba,
 
 extern void bgp_zebra_announce_default(struct bgp *bgp, struct nexthop *nh,
 				afi_t afi, uint32_t table_id, bool announce);
-
+extern int bgp_zebra_send_capabilities(struct bgp *bgp, bool force);
 #endif /* _QUAGGA_BGP_ZEBRA_H */
