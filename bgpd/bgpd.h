@@ -1021,17 +1021,15 @@ struct peer {
 #define PEER_FLAG_LOCAL_AS                  (1 << 21) /* local-as */
 #define PEER_FLAG_UPDATE_SOURCE             (1 << 22) /* update-source */
 
-	/* BGP-GR Peer related  flags */
-#define PEER_FLAG_GRACEFUL_RESTART_HELPER	(1 << 16) /* Helper */
-#define PEER_FLAG_GRACEFUL_RESTART		(1 << 17) /* Graceful Restart */
-#define PEER_FLAG_GRACEFUL_RESTART_GLOBAL_INHERIT (1 << 18) /* Global-Inherit */
+/* BGP-GR Peer related  flags */
+#define PEER_FLAG_GRACEFUL_RESTART_HELPER	(1 << 23) /* Helper */
+#define PEER_FLAG_GRACEFUL_RESTART		(1 << 24) /* Graceful Restart */
+#define PEER_FLAG_GRACEFUL_RESTART_GLOBAL_INHERIT (1 << 25) /* Global-Inherit */
 
-	/*
-	 *GR-Disabled mode means unset PEER_FLAG_GRACEFUL_RESTART
-	 *& PEER_FLAG_GRACEFUL_RESTART_HELPER
-	 *and PEER_FLAG_GRACEFUL_RESTART_GLOBAL_INHERIT
+	/* GR-Disabled mode means unset PEER_FLAG_GRACEFUL_RESTART
+	 * PEER_FLAG_GRACEFUL_RESTART_HELPER
+	 * and PEER_FLAG_GRACEFUL_RESTART_GLOBAL_INHERIT
 	 */
-
 	struct bgp_peer_gr PEER_GR_FSM[PEER_MODE][PEER_EVENT_CMD];
 	enum peer_mode peer_gr_present_state;
 	/* Non stop forwarding afi-safi count for BGP gr feature*/
